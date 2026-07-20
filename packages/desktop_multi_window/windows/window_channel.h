@@ -14,6 +14,8 @@
 #include "flutter/method_channel.h"
 #include "flutter/encodable_value.h"
 
+#include <flutter_messenger.h>
+
 class WindowChannel : public flutter::Plugin {
 
 public:
@@ -23,7 +25,8 @@ public:
     static std::unique_ptr<WindowChannel>
     RegisterWithRegistrar(FlutterDesktopPluginRegistrarRef registrar, int64_t window_id);
 
-    WindowChannel(int64_t window_id, std::unique_ptr<flutter::MethodChannel<Argument>> channel);
+    WindowChannel(int64_t window_id, std::unique_ptr<flutter::MethodChannel<Argument>> channel,
+                  FlutterDesktopMessengerRef messenger);
 
     ~WindowChannel() override;
 
@@ -51,6 +54,15 @@ private:
     MethodCallHandler handler_;
 
     std::unique_ptr<flutter::MethodChannel<Argument>> channel_;
+
+    // Roher Messenger des zugehoerigen Engines (mit AddRef gehalten). Nur um im
+    // Destruktor VOR dem Deregistrieren pruefen zu koennen, ob der Engine noch
+    // lebt (FlutterDesktopMessengerIsAvailable). Fehlt diese Pruefung, ruft der
+    // Client-Wrapper beim SetMethodCallHandler(nullptr) in einen bereits
+    // zerstoerten Engine -> Access Violation in flutter_windows.dll beim
+    // App-Ende. Der Wrapper prueft IsAvailable nur beim Senden, NICHT beim
+    // Deregistrieren.
+    FlutterDesktopMessengerRef messenger_;
 
 };
 

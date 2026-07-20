@@ -5,6 +5,9 @@
 #include "window_channel.h"
 #include "flutter/standard_method_codec.h"
 
+#include <flutter_messenger.h>
+#include <flutter_plugin_registrar.h>
+
 #include <variant>
 
 std::unique_ptr<WindowChannel>
@@ -14,13 +17,19 @@ WindowChannel::RegisterWithRegistrar(FlutterDesktopPluginRegistrarRef registrar,
   auto channel = std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
       window_registrar->messenger(), "mixin.one/flutter_multi_window_channel",
       &flutter::StandardMethodCodec::GetInstance());
-  return std::make_unique<WindowChannel>(window_id, std::move(channel));
+  // Rohen Messenger dieses Engines mit AddRef festhalten (das Objekt ueberlebt
+  // so den Engine, sodass wir im Destruktor gefahrlos IsAvailable pruefen
+  // koennen, auch wenn der Channel erst beim CRT-atexit stirbt).
+  auto messenger = FlutterDesktopPluginRegistrarGetMessenger(registrar);
+  FlutterDesktopMessengerAddRef(messenger);
+  return std::make_unique<WindowChannel>(window_id, std::move(channel), messenger);
 }
 
 WindowChannel::WindowChannel(
     int64_t window_id,
-    std::unique_ptr<flutter::MethodChannel<Argument>> channel
-) : window_id_(window_id), channel_(std::move(channel)) {
+    std::unique_ptr<flutter::MethodChannel<Argument>> channel,
+    FlutterDesktopMessengerRef messenger
+) : window_id_(window_id), channel_(std::move(channel)), messenger_(messenger) {
   channel_->SetMethodCallHandler([this](const flutter::MethodCall<Argument> &call, auto result) {
     if (!handler_) {
       std::cout << "WindowChannel::SetMethodCallHandler: handler_ is null" << std::endl;
@@ -34,7 +43,20 @@ WindowChannel::WindowChannel(
 }
 
 WindowChannel::~WindowChannel() {
-  channel_->SetMethodCallHandler(nullptr);
+  // Nur deregistrieren, solange der Engine (und damit sein Message-Dispatcher)
+  // noch lebt. Beim App-Ende wird der statische MultiWindowManager erst im
+  // CRT-atexit zerstoert — da ist der Engine laengst weg, und ein
+  // SetMethodCallHandler(nullptr) wuerde in flutter_windows.dll abstuerzen
+  // (der Client-Wrapper prueft die Verfuegbarkeit nur beim Senden, nicht beim
+  // Deregistrieren). Bei laufendem Sub-Fenster (Runtime-Close) lebt der Engine
+  // dagegen noch -> Handler wird sauber entfernt.
+  if (messenger_ && FlutterDesktopMessengerIsAvailable(messenger_)) {
+    channel_->SetMethodCallHandler(nullptr);
+  }
+  if (messenger_) {
+    FlutterDesktopMessengerRelease(messenger_);
+    messenger_ = nullptr;
+  }
 }
 
 void WindowChannel::InvokeMethod(
