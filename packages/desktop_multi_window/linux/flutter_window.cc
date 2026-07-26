@@ -26,6 +26,34 @@ FlutterWindow::FlutterWindow(
   gtk_window_set_position(GTK_WINDOW(window_), GTK_WIN_POS_CENTER);
   gtk_widget_show(GTK_WIDGET(window_));
 
+  // HoneyCord/Linux: Klick auf "Schliessen" darf das Fenster NICHT zerstoeren.
+  //
+  // GEMESSEN 2026-07-26 (Fedora 42, Flutter 3.44.8) mit gdb: Beim Zerstoeren der
+  // FlView laeuft Flutters Anwendungs-Abbau an. Aufrufkette:
+  //   gtk_application_remove_window  <- Hauptfenster wird abgemeldet
+  //   gtk_window_set_application
+  //   <Funktion in libflutter_linux_gtk.so>
+  // und dieselbe Funktion ruft unmittelbar danach g_application_quit(). Der
+  // ganze Client beendete sich sauber (Rueckgabewert 0, kein Absturz), obwohl
+  // nur das Unterfenster geschlossen wurde. Die Einbettung bietet keine
+  // Schnittstelle, das zu unterbinden.
+  //
+  // Deshalb: delete-event abfangen, Fenster nur verstecken und TRUE
+  // zurueckgeben (unterdrueckt GTKs Standardbehandlung = zerstoeren). Die
+  // Flutter-Instanz bleibt am Leben, der Abbau laeuft nie an.
+  // Nur Linux — Windows und macOS haben eigene Dateien und bleiben unberuehrt.
+  g_signal_connect(window_, "delete-event",
+                   G_CALLBACK(+[](GtkWidget *widget, GdkEvent *, gpointer arg) -> gboolean {
+                     auto *self = static_cast<FlutterWindow *>(arg);
+                     gtk_widget_hide(widget);
+                     if (auto callback = self->callback_.lock()) {
+                       callback->OnWindowClose(self->id_);
+                     }
+                     return TRUE;
+                   }), this);
+
+  // Bleibt fuer den Fall, dass das Fenster doch zerstoert wird (z. B. beim
+  // Beenden der Anwendung oder ueber die Dart-Seite).
   g_signal_connect(window_, "destroy", G_CALLBACK(+[](GtkWidget *, gpointer arg) {
     auto *self = static_cast<FlutterWindow *>(arg);
     if (auto callback = self->callback_.lock()) {
